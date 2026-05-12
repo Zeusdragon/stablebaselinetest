@@ -1,5 +1,5 @@
 from stable_baselines3.common.env_checker import check_env
-from snakeenv import SnekEnv
+from snakeenvp4 import SnekEnv
 
 
 env = SnekEnv()

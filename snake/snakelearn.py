@@ -1,6 +1,6 @@
 from stable_baselines3 import PPO
 import os
-from snakeenv import SnekEnv
+from snakeenvp4 import SnekEnv
 import time
 
 

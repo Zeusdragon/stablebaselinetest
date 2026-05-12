@@ -10,5 +10,6 @@ for episode in range(episodes):
 	while True:#not done:
 		random_action = env.action_space.sample()
 		print("action",random_action)
-		obs, reward, done, info = env.step(random_action)
+		step_result = env.step(random_action)
+		obs, reward, done, info = step_result[:4]
 		print('reward',reward)
