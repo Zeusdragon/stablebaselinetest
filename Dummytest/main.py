@@ -5,9 +5,9 @@ import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
 from sb3_contrib import QRDQN
-from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, DummyVecEnv, VecFrameStack
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 
 
 # ==========================================
@@ -152,22 +152,6 @@ class HeatPumpEnv(gym.Env):
 
         # Reward als Verhältnis von realem COP zur theoretischen Carnot-COP
         reward = cop_aktuell / carnot_cop
-        # Bestrafung für das Abtauen selbst (verbraucht Energie)
-        if action == 1:
-            reward -= 2.0
-
-        # Logge jede Aktion==1 in eine per-process CSV unter ./tb_logs/
-        if int(action) == 1:
-            try:
-                os.makedirs("./tb_logs/", exist_ok=True)
-                log_path = os.path.join("./tb_logs", f"actions_{os.getpid()}.csv")
-                with open(log_path, "a", encoding="utf-8") as f:
-                    # Format: global_idx,episode_start_idx,step_in_episode,action,reward,pid,wall_time
-                    f.write(
-                        f"{idx},{self.start_idx},{self.current_step},{int(action)},{reward},{os.getpid()},{pd.Timestamp.now()}\n"
-                    )
-            except Exception:
-                pass
 
         # jetzt die vorherige Aktion für den nächsten Schritt aktualisieren
         self.prev_action = int(action)
@@ -238,7 +222,7 @@ if __name__ == "__main__":
         # Pro FMU-Schritt simulierte Rechenzeit in Millisekunden (Default: 100 ms).
         # Kann ohne Code-Änderung via Umgebungsvariable überschrieben werden:
         #   set DUMMY_FMU_DELAY_MS=250
-        dummy_fmu_delay_ms = float(os.getenv("DUMMY_FMU_DELAY_MS", "100"))
+        dummy_fmu_delay_ms = float(os.getenv("DUMMY_FMU_DELAY_MS", "0"))
         print(f"Simulierte FMU-Rechenzeit pro Schritt: {dummy_fmu_delay_ms:.1f} ms")
 
         # ---------------------------------------------------------
@@ -278,10 +262,13 @@ if __name__ == "__main__":
             return _init
 
         # 8 Parallele Umgebungen starten
-        num_cpu = 8
+        num_cpu = 4
         print(f"Starte {num_cpu} parallele Umgebungen...")
         # Nutze DummyVecEnv falls SubprocVecEnv beim Testen abstürzt (besser fürs Debugging!)
         env = SubprocVecEnv([make_env() for i in range(num_cpu)])
+
+        # FrameStack anwenden (Agent sieht die letzten 36 Steps)
+        env = VecFrameStack(env, n_stack=36)
 
         # WICHTIG: VecNormalize anwenden! (Normalisiert Observationen auf Mean 0, Std 1)
         env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
@@ -291,6 +278,24 @@ if __name__ == "__main__":
         save_callback = SaveVecNormalizeCallback(
             save_freq=10000 // num_cpu, save_path=checkpoint_dir
         )
+
+        # Eval Callback einrichten
+        eval_env = DummyVecEnv([make_env()])
+        eval_env = VecFrameStack(eval_env, n_stack=36)
+        # Wichtig: eval_env sollte nicht den Reward normalisieren und nicht weiterlernen
+        eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.0, training=False)
+        
+        eval_callback = EvalCallback(
+            eval_env,
+            best_model_save_path=os.path.join(checkpoint_dir, "best_model"),
+            log_path=os.path.join(checkpoint_dir, "results"),
+            eval_freq=max(1000 // num_cpu, 1), # Evaluiere regelmäßig
+            deterministic=True,
+            render=False,
+            verbose=1
+        )
+        
+        callbacks = [save_callback, eval_callback]
 
         # Stelle sicher, dass TensorBoard-Ordner existiert
         os.makedirs("./tb_logs/", exist_ok=True)
@@ -302,15 +307,17 @@ if __name__ == "__main__":
             env,
             verbose=1,
             tensorboard_log="./tb_logs/",
-            learning_rate=3e-4,
-            batch_size=256,
+            learning_rate=9.195412848627078e-05,
+            batch_size=512,
+            gamma=0.8723783151895084,
+            exploration_fraction=0.15142078949693422
         )
 
         # Training starten (10x längere Laufzeit)
         print("Starte Training (Abbruch mit STRG+C)...")
         model.learn(
-            total_timesteps=50000,
-            callback=save_callback,
+            total_timesteps=100000,
+            callback=callbacks,
             tb_log_name="qrdqn_heatpump_run",
             progress_bar=True,
         )
